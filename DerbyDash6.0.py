@@ -67,17 +67,18 @@ HIT_DEPTH_MAX = 0.13
 #  DRINKS CATALOGUE
 # ─────────────────────────────────────────────────────────────────────────────
 # blur=beer, wobble=cider, speed=whiskey, delay=vodka.
-# Multipliers reflect how punishing each effect is in-game.
+# mult_add = additive bonus per drink. Final multiplier = 1 + sum(mult_add).
+# Max theoretical: 10 vodkas = 1 + 10*0.3 = x4.0
 DRINKS = [
-    dict(name="WATER",   emoji="💧", symbol="~", mult=1.0,
+    dict(name="WATER",   emoji="💧", symbol="~", mult_add=0.00,
          blur=0, wobble=0, speed=0, delay=0, color=(126, 200, 227)),
-    dict(name="BEER",    emoji="🍺", symbol="B", mult=1.4,
+    dict(name="BEER",    emoji="🍺", symbol="B", mult_add=0.05,
          blur=1, wobble=0, speed=0, delay=0, color=(240, 165,   0)),
-    dict(name="CIDER",   emoji="🍎", symbol="C", mult=1.8,
+    dict(name="CIDER",   emoji="🍎", symbol="C", mult_add=0.10,
          blur=0, wobble=1, speed=0, delay=0, color=(192,  57,  43)),
-    dict(name="WHISKEY", emoji="🥃", symbol="W", mult=2.5,
+    dict(name="WHISKEY", emoji="🥃", symbol="W", mult_add=0.20,
          blur=0, wobble=0, speed=1, delay=0, color=(139,  69,  19)),
-    dict(name="VODKA",   emoji="🍸", symbol="V", mult=3.5,
+    dict(name="VODKA",   emoji="🍸", symbol="V", mult_add=0.30,
          blur=0, wobble=0, speed=0, delay=1, color=(160, 216, 239)),
 ]
 MAX_DRINKS = 10
@@ -543,7 +544,7 @@ class DerbyDash:
         self.fx_speed  += d["speed"]
         self.fx_delay  += d["delay"]
         self.drunk_level = self.fx_blur + self.fx_wobble + self.fx_speed + self.fx_delay
-        self.multiplier  *= d["mult"]
+        self.multiplier  = 1.0 + sum(x["mult_add"] for x in self.drink_history)
 
     def _remove_drink(self):
         if not self.drink_history:
@@ -554,7 +555,7 @@ class DerbyDash:
         self.fx_speed  = max(0, self.fx_speed  - d["speed"])
         self.fx_delay  = max(0, self.fx_delay  - d["delay"])
         self.drunk_level = self.fx_blur + self.fx_wobble + self.fx_speed + self.fx_delay
-        self.multiplier  = max(1.0, self.multiplier / d["mult"])
+        self.multiplier  = 1.0 + sum(x["mult_add"] for x in self.drink_history)
 
     def _start_race(self):
         self._reset_race()
@@ -891,7 +892,8 @@ class DerbyDash:
             if d2["speed"]:  effects.append(f"+{d2['speed']}speed")
             if d2["delay"]:  effects.append(f"+{d2['delay']}delay")
             eff_str = "  ".join(effects) if effects else "no effect"
-            ms2 = self.f_tiny.render(f"x{d2['mult']:.1f}  {eff_str}", True, (175,138,58))
+            bonus_str = f"+{d2['mult_add']:.2f}" if d2['mult_add'] > 0 else "no bonus"
+            ms2 = self.f_tiny.render(f"{bonus_str}  {eff_str}", True, (175,138,58))
             surf.blit(ms2, ms2.get_rect(center=(cx+card_w//2, counter_y-card_h+68)))
             if sel:
                 ar = self.f_tiny.render("SELECTED", True, d2["color"])
@@ -900,7 +902,7 @@ class DerbyDash:
         # ── ORDER HISTORY + DRUNK METER ───────────────────────────────────────
         hist_lbl = self.f_tiny.render(
             f"ORDERED: {len(self.drink_history)}/{MAX_DRINKS}    "
-            f"MULT: x{self.multiplier:.2f}   blur:{self.fx_blur} wobble:{self.fx_wobble} speed:{self.fx_speed} delay:{self.fx_delay}",
+            f"MULT: x{self.multiplier:.2f}   blur:{self.fx_blur} wobble:{self.fx_wobble} speed:{self.fx_speed} delay:{self.fx_delay}",  # cumulative
             True, C_DARK_GOLD)
         surf.blit(hist_lbl, hist_lbl.get_rect(center=(W//2, counter_y+10)))
         mw, mh = 255, 7
@@ -967,7 +969,7 @@ class DerbyDash:
     #  RACE PHASE
     # ─────────────────────────────────────────────────────────────────────────
     def _race_keydown(self, key):
-        delay_frames = self.fx_delay * 2   # vodka: 2 frames per drink (~33ms each)
+        delay_frames = self.fx_delay * 3   # vodka: 3 frames per drink — 10 vodkas = ~500ms
         if key == pygame.K_LEFT:
             self.input_queue.append((self.race_frame + delay_frames, "left"))
         elif key == pygame.K_RIGHT:
@@ -1592,49 +1594,106 @@ class DerbyDash:
                              (mxp, skull_y + 4),
                              (mxp + mane_wave, skull_y - 6 - mi * 2), 2)
 
-        # ── JOCKEY ────────────────────────────────────────────────────────────
-        jock_seat_y = body_top - 2        # sits right on the withers
+        # ── JOCKEY — styled to match cutscene character ──────────────────────
+        # Red top, black trousers, pale skin, dark hair, black helmet
+        J_RED    = (200, 38, 38)     # red jumper
+        J_BLACK  = (22,  18, 14)     # black trousers / helmet
+        J_SKIN   = (225, 195, 160)   # pale skin
+        J_HAIR   = (30,  20,  8)     # very dark brown hair
+        J_HELM   = (28,  24, 20)     # near-black helmet shell
+        J_VISOR  = (60,  80, 110)    # dark blue-grey visor strip
+
+        jock_seat_y = body_top - 2
         arm_bob     = int(math.sin(t * 0.52) * 3)
 
-        # Seat straddling withers
-        pygame.draw.ellipse(surf, (40, 58, 78),
-                            (barrel_cx - 16, jock_seat_y - 8, 32, 14))
+        # ── Black riding trousers / seat ──────────────────────────────────────
+        pygame.draw.ellipse(surf, J_BLACK,
+                            (barrel_cx - 18, jock_seat_y - 10, 36, 16))
 
-        # Torso — leans forward, front-on so appears narrow
-        tor_bot = (barrel_cx, jock_seat_y - 4)
-        tor_top = (barrel_cx + 1, jock_seat_y - 30 + arm_bob)
-        pygame.draw.line(surf, (40, 58, 78), tor_bot, tor_top, 13)
-        # Silk stripes (horizontal)
-        for si, sc in enumerate([(215, 45, 45), (235, 235, 50), (215, 45, 45)]):
-            sy = tor_bot[1] - 5 - si * 7
-            pygame.draw.line(surf, sc,
-                             (tor_top[0] - 7, sy), (tor_top[0] + 7, sy), 4)
+        # ── Torso — red top, slightly forward lean ────────────────────────────
+        tor_bot = (barrel_cx, jock_seat_y - 2)
+        tor_top = (barrel_cx,  jock_seat_y - 34 + arm_bob)
+        # Body rect (slightly wider than a line, front-on)
+        pygame.draw.polygon(surf, J_RED, [
+            (tor_bot[0] - 10, tor_bot[1]),
+            (tor_bot[0] + 10, tor_bot[1]),
+            (tor_top[0] +  6, tor_top[1]),
+            (tor_top[0] -  6, tor_top[1]),
+        ])
+        # Subtle shading on right side
+        pygame.draw.polygon(surf, (160, 28, 28), [
+            (tor_bot[0] + 4,  tor_bot[1]),
+            (tor_bot[0] + 10, tor_bot[1]),
+            (tor_top[0] + 6,  tor_top[1]),
+            (tor_top[0] + 2,  tor_top[1]),
+        ])
 
-        # Arms reaching forward
-        ay = tor_top[1] + 6 + arm_bob
+        # ── Arms — red sleeves reaching forward with reins ───────────────────
+        ay = tor_top[1] + 8 + arm_bob
         for sign in (-1, 1):
-            ax = barrel_cx + sign * 20
-            pygame.draw.line(surf, (40, 58, 78),
-                             tor_top, (ax, ay + 4), 5)
-            # Rein lines to bridle
-            pygame.draw.line(surf, (150, 112, 42),
-                             (ax, ay + 4),
+            ax = barrel_cx + sign * 22
+            # Upper arm (shoulder to elbow)
+            pygame.draw.line(surf, J_RED,
+                             (tor_top[0] + sign * 6, tor_top[1] + 4),
+                             (ax, ay), 6)
+            # Forearm (elbow to hand — black glove)
+            pygame.draw.line(surf, J_BLACK,
+                             (ax, ay),
+                             (ax + sign * 4, ay + 6), 5)
+            pygame.draw.circle(surf, J_BLACK, (ax + sign * 4, ay + 6), 4)
+            # Rein lines
+            pygame.draw.line(surf, (145, 108, 38),
+                             (ax + sign * 4, ay + 6),
                              (head_cx + sign * 8, head_jaw_y - 14), 2)
 
-        # Head — small circle, front-on
-        hr  = 10
+        # ── Head ──────────────────────────────────────────────────────────────
+        hr  = 11
         hcx = barrel_cx
-        hcy = tor_top[1] - hr
-        pygame.draw.circle(surf, (208, 162, 116), (hcx, hcy), hr)
-        # Helmet dome
-        pygame.draw.ellipse(surf, (175, 35, 35),
-                            (hcx - hr - 1, hcy - hr, hr * 2 + 2, hr + 3))
-        pygame.draw.rect(surf,  (145, 24, 24),
-                         (hcx - hr - 3, hcy + 2, hr * 2 + 6, 4),
-                         border_radius=2)
-        # Goggles
-        pygame.draw.ellipse(surf, (55, 125, 195), (hcx - 10, hcy - 3, 8, 6))
-        pygame.draw.ellipse(surf, (55, 125, 195), (hcx + 2,  hcy - 3, 8, 6))
+        hcy = tor_top[1] - hr - 2
+
+        # Neck (skin coloured)
+        pygame.draw.rect(surf, J_SKIN,
+                         (hcx - 5, hcy + hr - 4, 10, 10), border_radius=2)
+
+        # Face — pale oval
+        pygame.draw.ellipse(surf, J_SKIN,
+                            (hcx - hr + 2, hcy - 4, (hr - 2) * 2, hr * 2 - 4))
+
+        # Black helmet dome covering top half of head
+        pygame.draw.ellipse(surf, J_HELM,
+                            (hcx - hr - 1, hcy - hr - 2, hr * 2 + 2, hr + 6))
+        # Helmet peak / brim jutting forward slightly
+        pygame.draw.polygon(surf, J_HELM, [
+            (hcx - hr - 2, hcy + 2),
+            (hcx + hr + 2, hcy + 2),
+            (hcx + hr + 5, hcy + 6),
+            (hcx - hr - 4, hcy + 6),
+        ])
+        # Visor strip just below helmet brim
+        pygame.draw.rect(surf, J_VISOR,
+                         (hcx - hr + 1, hcy + 1, (hr - 1) * 2, 4),
+                         border_radius=1)
+
+        # Eyes — small, dark, determined expression
+        blink = (int(t * 2.4) % 28 != 0)
+        for ex_off in (-4, 4):
+            pygame.draw.circle(surf, (35, 22, 10),
+                               (hcx + ex_off, hcy + 5), 2)
+            if blink:
+                pygame.draw.circle(surf, (240, 200, 160),
+                                   (hcx + ex_off + 1, hcy + 4), 1)
+
+        # Dark hair visible below helmet at sides / back
+        pygame.draw.ellipse(surf, J_HAIR,
+                            (hcx - hr, hcy + 4, 6, 8))
+        pygame.draw.ellipse(surf, J_HAIR,
+                            (hcx + hr - 6, hcy + 4, 6, 8))
+        # Hair tuft at back (flowing in wind)
+        hair_wave = int(math.sin(t * 0.6) * 2)
+        for hi2 in range(4):
+            pygame.draw.line(surf, J_HAIR,
+                             (hcx - 3 + hi2 * 2, hcy + 8),
+                             (hcx - 6 + hi2 * 2 + hair_wave, hcy + 16 + hi2), 2)
 
         # ── LANE INDICATOR DOTS ───────────────────────────────────────────────
         for i in range(3):
@@ -1659,8 +1718,8 @@ class DerbyDash:
         surf.blit(sc_t, (16, 8))
 
         # Multiplier (centre)
-        mult_col = (255, 120, 40) if self.multiplier >= 5 else \
-                   C_GOLD         if self.multiplier >= 2 else C_WHITE
+        mult_col = (255, 120, 40) if self.multiplier >= 3.0 else \
+                   C_GOLD         if self.multiplier >= 1.5 else C_WHITE
         mt = self.f_large.render(f"x{self.multiplier:.1f}", True, mult_col)
         surf.blit(mt, mt.get_rect(center=(W // 2, 24)))
 
