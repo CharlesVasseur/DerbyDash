@@ -29,7 +29,7 @@ import random
 # ─────────────────────────────────────────────────────────────────────────────
 #  CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-W, H = 900, 600
+W, H = 1280, 720
 FPS  = 60
 TITLE = "DERBY DASH"
 
@@ -53,7 +53,7 @@ C_WOOD      = (61, 31, 0)
 C_WOOD2     = (92, 46, 0)
 
 # Track / perspective
-HORIZON_Y   = 200       # pixel row of vanishing point
+HORIZON_Y   = 240       # pixel row of vanishing point
 GROUND_Y    = H         # pixel row at player's feet
 LANE_COUNT  = 3
 # At depth=0 (feet) the three lane centres in screen-X
@@ -160,17 +160,28 @@ class Obstacle:
         if r.width < 2 or r.height < 2:
             return
         is_ghost = getattr(self, "is_ghost", False)
+
+        # ── Perspective shadow — stretches toward player as depth → 0 ────────
+        if not is_ghost:
+            shadow_reach = int(r.height * (1.5 + (1.0 - self.depth) * 6))
+            shadow_alpha = max(0, min(120, int(90 * (1.0 - self.depth * 0.8))))
+            sh = pygame.Surface((r.width + shadow_reach, shadow_reach + 4), pygame.SRCALPHA)
+            pts = [
+                (shadow_reach // 2,          0),
+                (shadow_reach // 2 + r.width, 0),
+                (shadow_reach + r.width,      shadow_reach + 4),
+                (0,                           shadow_reach + 4),
+            ]
+            pygame.draw.polygon(sh, (0, 0, 0, shadow_alpha), pts)
+            surf.blit(sh, (r.x - shadow_reach // 2, r.bottom - 4))
+
         if is_ghost:
-            # Draw ghost fence onto a temp SRCALPHA surface, then blit with reduced alpha.
-            # Sober players see it clearly as faded; drunk players see almost opaque (hard to tell).
-            # ghost_alpha: 80 when sober, rises to 210 when very drunk
             ghost_alpha = min(220, 80 + drunk_level * 14)
             tmp = pygame.Surface((r.width + 20, r.height + 20), pygame.SRCALPHA)
             tmp.fill((0, 0, 0, 0))
             r_local = pygame.Rect(10, 10, r.width, r.height)
             if self.label == "FENCE":
                 self._draw_fence_on(tmp, r_local)
-            # Set alpha of whole surface
             tmp.set_alpha(ghost_alpha)
             surf.blit(tmp, (r.x - 10, r.y - 10))
         else:
@@ -473,6 +484,8 @@ class DerbyDash:
         self.stumble_timer = 0
         self.stumble_dx    = 0.0
         self.drunk_flash   = 0     # countdown for flash overlay
+        self.particles     = []    # list of dicts: x,y,vx,vy,life,max_life,r,color
+        self._was_jumping  = False # track landing frame
         # fx_ fields are set in _reset_bar and persist into the race
 
     # ── main loop ─────────────────────────────────────────────────────────────
@@ -1091,6 +1104,52 @@ class DerbyDash:
                 self.is_jumping = False
                 self.jump_vel   = 0.0
 
+        # ── PARTICLE SYSTEM ──────────────────────────────────────────────────
+        px_ground = int(lane_to_x(self.player_lane, 0.0) + self.stumble_dx)
+
+        # Takeoff burst when jump starts
+        if self.is_jumping and not self._was_jumping:
+            for _ in range(14):
+                angle = random.uniform(math.pi, 2 * math.pi)
+                spd   = random.uniform(2, 6)
+                self.particles.append(dict(
+                    x=px_ground, y=H - 18,
+                    vx=math.cos(angle) * spd, vy=math.sin(angle) * spd - 2,
+                    life=22, max_life=22, r=random.randint(2, 5),
+                    color=(160, 128, 80)))
+        self._was_jumping = self.is_jumping
+
+        # Landing dust cloud
+        if not self.is_jumping and self._was_jumping:
+            for _ in range(22):
+                angle = random.uniform(math.pi, 2 * math.pi)
+                spd   = random.uniform(3, 9)
+                self.particles.append(dict(
+                    x=px_ground, y=H - 12,
+                    vx=math.cos(angle) * spd, vy=math.sin(angle) * spd * 0.4,
+                    life=28, max_life=28, r=random.randint(3, 7),
+                    color=(140, 110, 65)))
+
+        # Continuous hoof-kick particles while running
+        if not self.is_jumping and random.random() < 0.25:
+            side = random.choice((-1, 1))
+            self.particles.append(dict(
+                x=px_ground + side * random.randint(8, 22), y=H - 10,
+                vx=side * random.uniform(0.5, 2.5), vy=random.uniform(-3, -1),
+                life=14, max_life=14, r=random.randint(1, 3),
+                color=(130, 100, 55)))
+
+        # Update existing particles
+        alive = []
+        for p in self.particles:
+            p['x']  += p['vx']
+            p['y']  += p['vy']
+            p['vy'] += 0.35   # gravity
+            p['life'] -= 1
+            if p['life'] > 0:
+                alive.append(p)
+        self.particles = alive
+
         # WHISKEY: each unit adds +0.003 to game speed (overrides flat base)
         speed_bonus = self.fx_speed * 0.0015
         self.game_speed = (0.010 + self.survive_time * 0.00013) + speed_bonus
@@ -1223,6 +1282,15 @@ class DerbyDash:
 
         self._draw_player(scene)
 
+        # ── PARTICLES ────────────────────────────────────────────────────────
+        for p in self.particles:
+            frac  = p['life'] / p['max_life']
+            alpha = int(200 * frac)
+            r     = max(1, int(p['r'] * frac))
+            ps    = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
+            pygame.draw.circle(ps, p['color'] + (alpha,), (r + 1, r + 1), r)
+            scene.blit(ps, (int(p['x']) - r - 1, int(p['y']) - r - 1))
+
         # ── Per-drink visual overlays ─────────────────────────────────────────
         # CIDER: dark vignette edges (wobble)
         if self.fx_wobble >= 1:
@@ -1284,15 +1352,28 @@ class DerbyDash:
             col = (35 + tier * 2, 28 + tier * 2, 50 + tier * 2)
             pygame.draw.line(surf, col, (0, ty), (W, ty), 1)
 
-        # Crowd dots
+        # Crowd dots — animated wave (roar effect)
         crowd_cols = [(220,50,50),(50,180,220),(240,200,40),
                       (180,80,220),(60,220,100),(255,255,255),(240,120,40)]
         rng = random.Random(42)
-        for _ in range(420):
-            fx = rng.randint(0, W)
-            fy = rng.randint(stand_top_y + 6, stand_bot_y - 4)
-            fc = crowd_cols[rng.randint(0, len(crowd_cols) - 1)]
-            pygame.draw.circle(surf, fc, (fx, fy), rng.randint(1, 3))
+        crowd_data = []
+        for _ in range(520):
+            crowd_data.append((
+                rng.randint(0, W),
+                rng.randint(stand_top_y + 6, stand_bot_y - 4),
+                crowd_cols[rng.randint(0, len(crowd_cols) - 1)],
+                rng.randint(1, 3),
+                rng.uniform(0, math.pi * 2),   # phase offset
+            ))
+        t_crowd = self.race_frame * 0.06
+        for (fx, fy, fc, fr, phase) in crowd_data:
+            # Each person bobs up and down slightly, wave travels left→right
+            wave = math.sin(t_crowd + fx * 0.018 + phase)
+            bob  = int(wave * 2.5)
+            # Brightness pulses with the wave (arms up = brighter)
+            bright = int(max(0, wave) * 40)
+            c = tuple(min(255, ch + bright) for ch in fc)
+            pygame.draw.circle(surf, c, (fx, fy + bob), fr)
 
         # ── 4. FLOODLIGHT PYLONS ─────────────────────────────────────────────
         for lx in (55, W - 55):
@@ -1307,18 +1388,49 @@ class DerbyDash:
                 pygame.draw.ellipse(gl, (255, 240, 160, 60), (0, 0, 20, 20))
                 surf.blit(gl, (lhx - 10, 11))
 
-        # ── 5. ADVERTISING BOARDS (scrolling) ────────────────────────────────
+        # ── 5. ADVERTISING BOARDS (fixed) ────────────────────────────────────
         board_h = 20
         board_y = HORIZON_Y - board_h - 2
-        board_colors = [(200,30,30),(30,100,200),(220,180,0),(30,160,30),(200,80,200),(240,120,0)]
-        board_texts  = ["DERBY DASH","BET NOW","GOLD CUP","RACE DAY","SPONSOR","VIP ZONE"]
-        board_w = 110
-        for bi in range(8):
-            bx  = int((bi * 130 + self.bg_offset * 0.5) % (W + 130)) - 65
+        board_colors = [
+            (200, 30,  30),   # red
+            (30,  100, 200),  # blue
+            (220, 180,  0),   # gold
+            (30,  160,  30),  # green
+            (200,  80, 200),  # purple
+            (240, 120,   0),  # orange
+            (18,   18,  18),  # near-black (Derby branding)
+            (180,  20,  20),  # dark red (drink responsibly)
+            (20,   80, 160),  # navy
+            (160, 130,  20),  # dark gold
+        ]
+        board_texts = [
+            "THE DERBY",
+            "DRINK RESPONSIBLY",
+            "THE DERBY",
+            "GOLD CUP 2025",
+            "DRINK RESPONSIBLY",
+            "THE DERBY",
+            "VIP ZONE",
+            "DRINK RESPONSIBLY",
+            "THE DERBY",
+            "RACE DAY",
+            "DRINK RESPONSIBLY",
+            "BET NOW",
+        ]
+        board_w = 128
+        n_boards = 10
+        total_w  = n_boards * board_w + (n_boards - 1) * 4
+        start_x  = (W - total_w) // 2
+        for bi in range(n_boards):
+            bx  = start_x + bi * (board_w + 4)
             col = board_colors[bi % len(board_colors)]
+            txt_str = board_texts[bi % len(board_texts)]
             pygame.draw.rect(surf, col, (bx, board_y, board_w, board_h))
+            # Highlight top stripe
+            hi = tuple(min(255, c + 55) for c in col)
+            pygame.draw.rect(surf, hi, (bx, board_y, board_w, 3))
             pygame.draw.rect(surf, (255, 255, 255), (bx, board_y, board_w, board_h), 1)
-            txt = self.f_tiny.render(board_texts[bi % len(board_texts)], True, (255, 255, 255))
+            txt = self.f_tiny.render(txt_str, True, (255, 255, 255))
             surf.blit(txt, txt.get_rect(center=(bx + board_w // 2, board_y + board_h // 2)))
 
         # ── 6. GROUND — arena dirt gradient ──────────────────────────────────
@@ -1444,6 +1556,7 @@ class DerbyDash:
         # ── 11. HORIZON LINE ─────────────────────────────────────────────────
         pygame.draw.line(surf, (50, 38, 22), (0, HORIZON_Y), (W, HORIZON_Y), 2)
 
+
     def _draw_player(self, surf):
         """Front-facing horse + jockey.  The horse is viewed nearly head-on,
         so the body is foreshortened (tall & narrow), legs drop straight down,
@@ -1462,8 +1575,8 @@ class DerbyDash:
         gait     = t * 0.60              # gallop cycle
 
         # ── GROUND SHADOW ────────────────────────────────────────────────────
-        sh_sc = max(0.2, 1.0 - abs(jy) / 100)
-        sw    = int(68 * sh_sc)
+        sh_sc = max(0.2, 1.0 - abs(jy) / 140)
+        sw    = int(96 * sh_sc)
         sh_s  = pygame.Surface((sw * 2, 10), pygame.SRCALPHA)
         pygame.draw.ellipse(sh_s, (0, 0, 0, int(70 * sh_sc)), (0, 0, sw * 2, 10))
         surf.blit(sh_s, (px - sw, ground - 3))
@@ -1472,17 +1585,17 @@ class DerbyDash:
         # Front-on gallop: legs swing forward/back in pairs.
         # We draw four legs as thin pillars that splay slightly outward.
         # Hip attachment points on the barrel
-        body_top = base_y - 155          # top of barrel
-        body_bot = base_y - 68           # bottom of barrel
+        body_top = base_y - 220          # top of barrel (scaled for 720p)
+        body_bot = base_y - 96           # bottom of barrel
         barrel_cx = px
-        barrel_half_w = 22               # half-width of slim barrel at mid
+        barrel_half_w = 32               # half-width of slim barrel at mid
 
         # Hip sockets (where upper leg meets barrel)
         hip_pts = [
-            (barrel_cx - 18, body_bot - 5),   # left rear
-            (barrel_cx + 18, body_bot - 5),   # right rear
-            (barrel_cx - 12, body_bot + 2),   # left front
-            (barrel_cx + 12, body_bot + 2),   # right front
+            (barrel_cx - 26, body_bot - 7),   # left rear
+            (barrel_cx + 26, body_bot - 7),   # right rear
+            (barrel_cx - 16, body_bot + 3),   # left front
+            (barrel_cx + 16, body_bot + 3),   # right front
         ]
         # Phase offsets: rear pair leads front pair by half a cycle
         phases = [0, math.pi, math.pi * 0.5, math.pi * 1.5]
@@ -1490,25 +1603,25 @@ class DerbyDash:
         for i, (hx, hy) in enumerate(hip_pts):
             swing = math.sin(gait + phases[i])
             # Knee: swings forward/back ±12 px, drops to roughly mid-shin
-            kx = hx + swing * 10
-            ky = hy + 38
+            kx = hx + swing * 14
+            ky = hy + 54
             # Cannon bone: nearly vertical, tiny splay outward
             side_sign = -1 if i % 2 == 0 else 1
-            foot_x = kx + side_sign * 4 + swing * 4
+            foot_x = kx + side_sign * 6 + swing * 6
             foot_y = base_y - 2
 
             # Upper leg (thick)
-            pygame.draw.line(surf, leg_c, (hx, hy), (int(kx), int(ky)), 7)
+            pygame.draw.line(surf, leg_c, (hx, hy), (int(kx), int(ky)), 10)
             # Cannon bone (thinner)
-            pygame.draw.line(surf, leg_c, (int(kx), int(ky)), (int(foot_x), foot_y), 5)
+            pygame.draw.line(surf, leg_c, (int(kx), int(ky)), (int(foot_x), foot_y), 7)
             # Fetlock bump
-            pygame.draw.circle(surf, leg_c, (int(foot_x), foot_y - 2), 3)
+            pygame.draw.circle(surf, leg_c, (int(foot_x), foot_y - 2), 4)
             # Hoof
             pygame.draw.ellipse(surf, hoof_c,
-                                (int(foot_x) - 6, foot_y - 3, 12, 7))
+                                (int(foot_x) - 8, foot_y - 4, 16, 9))
 
         # ── BARREL (body) — tall narrow ellipse, foreshortened ───────────────
-        barrel_w = 45
+        barrel_w = 64
         barrel_h = body_bot - body_top
         pygame.draw.ellipse(surf, horse_c,
                             (barrel_cx - barrel_w // 2, body_top,
@@ -1522,8 +1635,8 @@ class DerbyDash:
         neck_bot_x = barrel_cx
         neck_bot_y = body_top + 8
         neck_top_x = barrel_cx + 2      # very slight forward lean
-        neck_top_y = body_top - 38
-        neck_w = 20
+        neck_top_y = body_top - 54
+        neck_w = 28
         # Draw as a quad (trapezoid widening at base)
         pygame.draw.polygon(surf, horse_c, [
             (neck_bot_x - neck_w // 2,     neck_bot_y),
@@ -1542,15 +1655,15 @@ class DerbyDash:
         # ── HEAD — front-on: wide jaw, long nose, big eyes ────────────────────
         head_cx = neck_top_x
         head_jaw_y = neck_top_y          # jaw attaches at neck top
-        head_h  = 52
-        head_w  = 30                     # slimmer than before
+        head_h  = 72
+        head_w  = 42                     # scaled for 720p
         # Skull / forehead (upper, rounder)
         skull_y = head_jaw_y - head_h
         pygame.draw.ellipse(surf, horse_c,
                             (head_cx - head_w // 2, skull_y,
                              head_w, head_h))
         # Jaw flares slightly wider
-        jaw_w = head_w + 6
+        jaw_w = head_w + 8
         pygame.draw.ellipse(surf, horse_c,
                             (head_cx - jaw_w // 2, head_jaw_y - 22,
                              jaw_w, 26))
@@ -1603,53 +1716,53 @@ class DerbyDash:
         J_HELM   = (28,  24, 20)     # near-black helmet shell
         J_VISOR  = (60,  80, 110)    # dark blue-grey visor strip
 
-        jock_seat_y = body_top - 2
-        arm_bob     = int(math.sin(t * 0.52) * 3)
+        jock_seat_y = body_top - 3
+        arm_bob     = int(math.sin(t * 0.52) * 4)
 
         # ── Black riding trousers / seat ──────────────────────────────────────
         pygame.draw.ellipse(surf, J_BLACK,
-                            (barrel_cx - 18, jock_seat_y - 10, 36, 16))
+                            (barrel_cx - 26, jock_seat_y - 14, 52, 22))
 
         # ── Torso — red top, slightly forward lean ────────────────────────────
         tor_bot = (barrel_cx, jock_seat_y - 2)
-        tor_top = (barrel_cx,  jock_seat_y - 34 + arm_bob)
+        tor_top = (barrel_cx,  jock_seat_y - 48 + arm_bob)
         # Body rect (slightly wider than a line, front-on)
         pygame.draw.polygon(surf, J_RED, [
-            (tor_bot[0] - 10, tor_bot[1]),
-            (tor_bot[0] + 10, tor_bot[1]),
-            (tor_top[0] +  6, tor_top[1]),
-            (tor_top[0] -  6, tor_top[1]),
+            (tor_bot[0] - 14, tor_bot[1]),
+            (tor_bot[0] + 14, tor_bot[1]),
+            (tor_top[0] +  8, tor_top[1]),
+            (tor_top[0] -  8, tor_top[1]),
         ])
         # Subtle shading on right side
         pygame.draw.polygon(surf, (160, 28, 28), [
-            (tor_bot[0] + 4,  tor_bot[1]),
-            (tor_bot[0] + 10, tor_bot[1]),
-            (tor_top[0] + 6,  tor_top[1]),
-            (tor_top[0] + 2,  tor_top[1]),
+            (tor_bot[0] + 5,  tor_bot[1]),
+            (tor_bot[0] + 14, tor_bot[1]),
+            (tor_top[0] + 8,  tor_top[1]),
+            (tor_top[0] + 3,  tor_top[1]),
         ])
 
         # ── Arms — red sleeves reaching forward with reins ───────────────────
-        ay = tor_top[1] + 8 + arm_bob
+        ay = tor_top[1] + 10 + arm_bob
         for sign in (-1, 1):
-            ax = barrel_cx + sign * 22
+            ax = barrel_cx + sign * 30
             # Upper arm (shoulder to elbow)
             pygame.draw.line(surf, J_RED,
-                             (tor_top[0] + sign * 6, tor_top[1] + 4),
-                             (ax, ay), 6)
+                             (tor_top[0] + sign * 8, tor_top[1] + 5),
+                             (ax, ay), 8)
             # Forearm (elbow to hand — black glove)
             pygame.draw.line(surf, J_BLACK,
                              (ax, ay),
-                             (ax + sign * 4, ay + 6), 5)
-            pygame.draw.circle(surf, J_BLACK, (ax + sign * 4, ay + 6), 4)
+                             (ax + sign * 6, ay + 8), 7)
+            pygame.draw.circle(surf, J_BLACK, (ax + sign * 6, ay + 8), 5)
             # Rein lines
             pygame.draw.line(surf, (145, 108, 38),
                              (ax + sign * 4, ay + 6),
                              (head_cx + sign * 8, head_jaw_y - 14), 2)
 
         # ── Head ──────────────────────────────────────────────────────────────
-        hr  = 11
+        hr  = 15
         hcx = barrel_cx
-        hcy = tor_top[1] - hr - 2
+        hcy = tor_top[1] - hr - 3
 
         # Neck (skin coloured)
         pygame.draw.rect(surf, J_SKIN,
